@@ -1,0 +1,142 @@
+require 'socket'
+sock = UDPSocket.new
+
+scaleNotes = scale :Eb4, :major
+drums = [:bd_ada, :drum_snare_hard,
+         :drum_cymbal_open, :drum_cymbal_closed,
+         :perc_snap, :elec_bong, :elec_triangle, :drum_splash_hard]
+noises = [:misc_burp, :elec_chime, :elec_twang, :elec_pop,
+          :elec_flip, :elec_tick, :elec_twip, :elec_ping]
+fxs = [:reverb, :distortion, :bitcrusher, :panslicer, :flanger, :wobble]
+
+maxP = 8
+maxX = 8
+maxY = 8
+maxI = 6
+xy = []
+pattern = []
+params = []
+tplay = []
+maxI.times do |i|
+  xy[i] = []
+  maxP.times do |p|
+    xy[i][p] = []
+  end
+  pattern[i] = []
+  params[i] = {}
+  tplay[i] = []
+end
+booted = false
+
+define :setXY do |inst, pat, matrix|
+  xy[inst][pat] = matrix
+  booted = true
+end
+
+define :setPattern do |inst, pat|
+  pattern[inst] = pat
+end
+
+define :setParam do |inst, param, val|
+  params[inst][param.to_sym] = val
+end
+
+define :tempPlay do |inst, note|
+  tplay[inst].push(note)
+end
+
+define :oscBoot do
+  play 65
+  booted = true
+  cue :booted
+end
+
+define :instrument do |inst, &player|
+  live_loop ('inst'+inst.to_s).to_sym do
+    with_fx :echo, phase: 0.375, mix: 0.2 do |efx|
+      loop do
+        prevfx = params[inst][:fx]
+        print 'inst ' + inst.to_s + ' changing fx to ' + fxs[prevfx].to_s
+        with_fx fxs[prevfx], mix: params[inst][:fxmix], sample_rate:5000 do |fx|
+          loop do
+            now = sync :step
+            pat = pattern[inst][now[:ptime]]
+            notes = xy[inst][pat][now[:xtime]].reverse
+            iparams = params[inst]
+            if iparams[:phase] < 0.1 then iparams[:phase] = 0.1 end
+            control efx, mix: iparams[:echo], phase: iparams[:phase]
+            control fx, mix: iparams[:fxmix]
+            player.call(inst, notes)
+            if prevfx!=params[inst][:fx] then break end
+          end
+        end
+      end
+    end
+  end
+end
+
+live_loop :tempo do
+  maxX.times do |ptime|
+    maxX.times do |xtime|
+      sleep 0.25
+      sock.send('time=' + xtime.to_s + ', pat=' + ptime.to_s, 0, 'localhost', 7000)
+      if (!booted) then next end
+      cue :step, {:xtime => xtime, :ptime => ptime}
+    end
+  end
+end
+
+define :synthPlayer do |inst, notes, synth, base|
+  iparams = params[inst]
+  with_synth synth do
+    maxY.times do |y|
+      if notes[y]==1 or tplay[inst].include?(y) then
+        play scaleNotes[y] + 12*iparams[:octave].floor + base, iparams
+      end
+    end
+    tplay[inst] = []
+  end
+end
+
+define :samplePlayer do |inst, notes, samples|
+  iparams = params[inst]
+  maxY.times do |y|
+    if notes[y]==1 or tplay[inst].include?(y) then
+      sample samples[y], iparams
+    end
+  end
+  tplay[inst] = []
+end
+
+define :slicePlayer do |inst, notes, samples|
+  sam = :loop_amen
+  maxY.times do |y|
+    if notes[y]==1 or tplay[inst].include?(y) then
+      fin = (y+1)*0.125+0.1
+      if fin > 1 then fin = 1 end
+      sample sam, start: y*0.125, finish: fin
+    end
+  end
+  tplay[inst] = []
+end
+
+
+sync :booted
+instrument 0 do |inst, notes|
+  synthPlayer inst, notes, :beep, 0
+end
+instrument 1 do |inst, notes|
+  synthPlayer inst, notes, :tb303, -12
+end
+instrument 2 do |inst, notes|
+  synthPlayer inst, notes, :dsaw, -24
+end
+instrument 3 do |inst, notes|
+  samplePlayer inst, notes, drums
+end
+instrument 4 do |inst, notes|
+  samplePlayer inst, notes, noises
+end
+instrument 5 do |inst, notes|
+  slicePlayer inst, notes, noises
+end
